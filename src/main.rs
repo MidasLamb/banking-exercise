@@ -174,8 +174,6 @@ deposit,1,1,1.0"#[..],
 
         process(reader, writer).unwrap();
 
-        dbg!(std::str::from_utf8(&output[..]).unwrap());
-
         assert_eq!(
             output,
             b"client,available,held,total,locked\n1,1.0,0,1.0,false\n"
@@ -193,11 +191,34 @@ deposit,1,1,1.0"#[..],
 
         process(reader, writer).unwrap();
 
-        dbg!(std::str::from_utf8(&output[..]).unwrap());
-
         assert_eq!(
             output,
             b"client,available,held,total,locked\n1,1.0,0,1.0,false\n"
         )
+    }
+
+    #[test]
+    fn check_example_csv() {
+        let reader = csv::ReaderBuilder::new()
+            .has_headers(true)
+            .trim(csv::Trim::All)
+            .from_reader(
+                &br#"type, client, tx, amount
+deposit, 1, 1, 1.0
+deposit, 2, 2, 2.0
+deposit, 1, 3, 2.0
+withdrawal, 1, 4, 1.5
+withdrawal, 2, 5, 3.0"#[..],
+            );
+
+        let mut output: Vec<u8> = vec![];
+        let writer = csv::Writer::from_writer(&mut output);
+
+        process(reader, writer).unwrap();
+
+        let output_str = std::str::from_utf8(&output[..]).unwrap();
+
+        assert!(output_str.contains("1,1.5,0,1.5,false"));
+        assert!(output_str.contains("2,2.0,0,2.0,false"));
     }
 }
