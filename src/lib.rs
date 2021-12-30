@@ -145,6 +145,7 @@ impl ClientAccount {
         }
     }
 
+    /// Fails when trying to add a tranasaction that is not for this client, returning the passed in transaction.
     pub fn add_transaction(&mut self, transaction: Transaction) -> Result<(), Transaction> {
         if *transaction.get_client_id() != self.id {
             return Err(transaction);
@@ -186,7 +187,7 @@ impl ClientAccount {
         Ok(())
     }
 
-    /// Fails when trying to add an action for another client.
+    /// Fails when trying to add an action for a client that is not this client. Returning the passed in dispute action.
     pub fn add_dispute_action(
         &mut self,
         dispute_action: DisputeAction,
@@ -207,7 +208,8 @@ impl ClientAccount {
             match self.transaction_history.get_mut(&referenced_transaction_id) {
                 Some(t) => t,
                 None => {
-                    // Nothing to do, since the transaction doesn't exist.
+                    // Nothing to do, since the transaction doesn't exist (or it doesn't exist for this user!).
+                    // Also don't store anything about it, since it's probably just a mistake.
                     return Ok(());
                 }
             };
