@@ -32,15 +32,9 @@ impl Transaction {
             Transaction::Withdrawal { transaction_id, .. } => transaction_id,
         }
     }
-
-    fn get_amount(&self) -> &Decimal {
-        match self {
-            Transaction::Deposit { amount, .. } => amount,
-            Transaction::Withdrawal { amount, .. } => amount,
-        }
-    }
 }
 
+#[derive(Debug)]
 pub enum DisputeAction {
     Dispute {
         client: u16,
@@ -192,6 +186,7 @@ impl ClientAccount {
         Ok(())
     }
 
+    /// Fails when trying to add an action for another client.
     pub fn add_dispute_action(
         &mut self,
         dispute_action: DisputeAction,
@@ -219,10 +214,15 @@ impl ClientAccount {
 
         match (&mut referenced_transaction.state, &dispute_action) {
             (state @ TransactionState::Accepted, DisputeAction::Dispute { .. }) => {
-                let amount = referenced_transaction.transaction.get_amount();
-                self.available -= amount;
-                self.held += amount;
-
+                match referenced_transaction.transaction {
+                    Transaction::Deposit { amount, .. } => {
+                        self.available -= amount;
+                        self.held += amount;
+                    }
+                    Transaction::Withdrawal { .. } => {
+                        // Don't do anything until the dispute is resolved.
+                    }
+                }
                 self.dispute_history.push(dispute_action);
                 *state = TransactionState::Disputed
             }
@@ -240,9 +240,15 @@ impl ClientAccount {
             }
 
             (state @ TransactionState::Disputed, DisputeAction::Resolve { .. }) => {
-                let amount = referenced_transaction.transaction.get_amount();
-                self.available += amount;
-                self.held -= amount;
+                match referenced_transaction.transaction {
+                    Transaction::Deposit { amount, .. } => {
+                        self.available += amount;
+                        self.held -= amount;
+                    }
+                    Transaction::Withdrawal { amount, .. } => {
+                        self.available += amount;
+                    }
+                }
                 self.dispute_history.push(dispute_action);
                 *state = TransactionState::Resolved
             }
@@ -260,8 +266,15 @@ impl ClientAccount {
             }
 
             (state @ TransactionState::Disputed, DisputeAction::Chargeback { .. }) => {
-                let amount = referenced_transaction.transaction.get_amount();
-                self.held -= amount;
+                match referenced_transaction.transaction {
+                    Transaction::Deposit { amount, .. } => {
+                        self.held -= amount;
+                    }
+                    Transaction::Withdrawal { .. } => {
+                        // We didn't change anything about the funds for a witdrawal,
+                        // so when we chargeback we don't have to do anything.
+                    }
+                }
                 self.locked = true;
                 self.dispute_history.push(dispute_action);
                 *state = TransactionState::Chargebacked
@@ -314,26 +327,24 @@ pub struct PaymentEngine {
 
 impl Default for PaymentEngine {
     fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl PaymentEngine {
-    pub fn new() -> Self {
         Self {
             state: HashMap::new(),
         }
     }
+}
 
+impl PaymentEngine {
     pub fn add_transaction(&mut self, transaction: Transaction) {
         let client = self
             .state
             .entry(*transaction.get_client_id())
             .or_insert_with(|| ClientAccount::new(*transaction.get_client_id()));
-        match client.add_transaction(transaction) {
-            Ok(()) => {}
-            Err(_) => todo!(),
-        }
+        // SAFETY:
+        // `add_transaction` only returns an Err if we give it a transaction that does not belong to the client,
+        // while we just ensured that we got the correct client.
+        client
+            .add_transaction(transaction)
+            .expect("Retrieved the correct client.");
     }
 
     pub fn add_dispute_action(&mut self, dispute_action: DisputeAction) {
@@ -341,10 +352,12 @@ impl PaymentEngine {
             .state
             .entry(*dispute_action.get_client_id())
             .or_insert_with(|| ClientAccount::new(*dispute_action.get_client_id()));
-        match client.add_dispute_action(dispute_action) {
-            Ok(()) => {}
-            Err(_) => todo!(),
-        }
+        // SAFETY:
+        // `add_dispute_action` only returns an Err if we give it an action that does not belong to the client,
+        // while we just ensured that we got the correct client.
+        client
+            .add_dispute_action(dispute_action)
+            .expect("Retrieved the correct client.");
     }
 
     pub fn get_all_client_states(&self) -> impl Iterator<Item = &ClientAccount> {
@@ -364,7 +377,7 @@ mod tests {
 
     #[test]
     fn no_transactions_no_problem() {
-        let payment_engine = PaymentEngine::new();
+        let payment_engine = PaymentEngine::default();
         assert_eq!(payment_engine.get_all_client_states().count(), 0);
     }
 
@@ -372,7 +385,7 @@ mod tests {
     fn simple_deposit() {
         let client = 1;
         let amount = dec!(2.0);
-        let mut payment_engine = PaymentEngine::new();
+        let mut payment_engine = PaymentEngine::default();
         payment_engine.add_transaction(Transaction::Deposit {
             client,
             transaction_id: 1,
@@ -390,7 +403,7 @@ mod tests {
     fn withdrawal_with_no_funds_available() {
         let client = 1;
         let amount = dec!(2.0);
-        let mut payment_engine = PaymentEngine::new();
+        let mut payment_engine = PaymentEngine::default();
         payment_engine.add_transaction(Transaction::Withdrawal {
             client,
             transaction_id: 1,
@@ -408,7 +421,7 @@ mod tests {
     fn withdrawal_after_deposit_for_same_amount() {
         let client = 1;
         let amount = dec!(2.0);
-        let mut payment_engine = PaymentEngine::new();
+        let mut payment_engine = PaymentEngine::default();
         payment_engine.add_transaction(Transaction::Deposit {
             client,
             transaction_id: 1,
@@ -431,7 +444,7 @@ mod tests {
     fn withdrawal_after_deposit_for_less_amount() {
         let client = 1;
         let amount = dec!(2.0);
-        let mut payment_engine = PaymentEngine::new();
+        let mut payment_engine = PaymentEngine::default();
         payment_engine.add_transaction(Transaction::Deposit {
             client,
             transaction_id: 1,
@@ -454,7 +467,7 @@ mod tests {
     fn dispute_after_deposit_total_remains_same() {
         let client = 1;
         let amount = dec!(2.0);
-        let mut payment_engine = PaymentEngine::new();
+        let mut payment_engine = PaymentEngine::default();
         payment_engine.add_transaction(Transaction::Deposit {
             client,
             transaction_id: 1,
@@ -480,7 +493,7 @@ mod tests {
     fn chargeback_causes_locked_account() {
         let client = 1;
         let amount = dec!(2.0);
-        let mut payment_engine = PaymentEngine::new();
+        let mut payment_engine = PaymentEngine::default();
         payment_engine.add_transaction(Transaction::Deposit {
             client,
             transaction_id: 1,
@@ -507,7 +520,7 @@ mod tests {
     fn dispute_resolve() {
         let client = 1;
         let amount = dec!(2.0);
-        let mut payment_engine = PaymentEngine::new();
+        let mut payment_engine = PaymentEngine::default();
         payment_engine.add_transaction(Transaction::Deposit {
             client,
             transaction_id: 1,
@@ -534,7 +547,7 @@ mod tests {
     fn double_dispute_doesnt_hold_twice() {
         let client = 1;
         let amount = dec!(2.0);
-        let mut payment_engine = PaymentEngine::new();
+        let mut payment_engine = PaymentEngine::default();
         payment_engine.add_transaction(Transaction::Deposit {
             client,
             transaction_id: 1,
@@ -565,7 +578,7 @@ mod tests {
     fn disputing_rejected_withdrawal_does_nothing() {
         let client = 1;
         let amount = dec!(2.0);
-        let mut payment_engine = PaymentEngine::new();
+        let mut payment_engine = PaymentEngine::default();
         payment_engine.add_transaction(Transaction::Deposit {
             client,
             transaction_id: 1,
@@ -594,7 +607,7 @@ mod tests {
 
     #[test]
     fn multiple_clients() {
-        let mut payment_engine = PaymentEngine::new();
+        let mut payment_engine = PaymentEngine::default();
         payment_engine.add_transaction(Transaction::Deposit {
             client: 1,
             transaction_id: 1,
@@ -630,5 +643,114 @@ mod tests {
             payment_engine.get_client_state(2).unwrap().available,
             dec!(3.0)
         );
+    }
+
+    #[test]
+    fn disputing_another_client_than_the_transaction_does_nothing() {
+        let mut payment_engine = PaymentEngine::default();
+        payment_engine.add_transaction(Transaction::Deposit {
+            client: 1,
+            transaction_id: 1,
+            amount: dec!(2.0),
+        });
+
+        payment_engine.add_dispute_action(DisputeAction::Dispute {
+            client: 2, // Another client than made the transaction!
+            referenced_transaction_id: 1,
+        });
+
+        assert_eq!(payment_engine.get_all_client_states().count(), 2);
+        assert_eq!(
+            payment_engine.get_client_state(1).unwrap().available(),
+            dec!(2.0)
+        );
+        assert_eq!(
+            payment_engine.get_client_state(1).unwrap().held(),
+            Decimal::ZERO
+        );
+        assert_eq!(payment_engine.get_client_state(1).unwrap().locked(), false);
+
+        //The other client has been inserted as well!
+        assert_eq!(
+            payment_engine.get_client_state(2).unwrap().available(),
+            Decimal::ZERO
+        );
+        assert_eq!(
+            payment_engine.get_client_state(2).unwrap().held(),
+            Decimal::ZERO
+        );
+        assert_eq!(payment_engine.get_client_state(2).unwrap().locked(), false);
+    }
+
+    #[test]
+    fn dispute_withdrawal_and_resolve() {
+        let mut payment_engine = PaymentEngine::default();
+        payment_engine.add_transaction(Transaction::Deposit {
+            client: 1,
+            transaction_id: 1,
+            amount: dec!(2.0),
+        });
+
+        payment_engine.add_transaction(Transaction::Withdrawal {
+            client: 1,
+            transaction_id: 2,
+            amount: dec!(1.0),
+        });
+
+        payment_engine.add_dispute_action(DisputeAction::Dispute {
+            client: 1,
+            referenced_transaction_id: 2,
+        });
+
+        payment_engine.add_dispute_action(DisputeAction::Resolve {
+            client: 1,
+            referenced_transaction_id: 2,
+        });
+
+        assert_eq!(
+            payment_engine.get_client_state(1).unwrap().held(),
+            Decimal::ZERO
+        );
+        assert_eq!(
+            payment_engine.get_client_state(1).unwrap().available(),
+            dec!(2.0)
+        );
+        assert_eq!(payment_engine.get_client_state(1).unwrap().locked(), false);
+    }
+
+    #[test]
+    fn dispute_withdrawal_and_charge_back() {
+        let mut payment_engine = PaymentEngine::default();
+        payment_engine.add_transaction(Transaction::Deposit {
+            client: 1,
+            transaction_id: 1,
+            amount: dec!(2.0),
+        });
+
+        payment_engine.add_transaction(Transaction::Withdrawal {
+            client: 1,
+            transaction_id: 2,
+            amount: dec!(1.0),
+        });
+
+        payment_engine.add_dispute_action(DisputeAction::Dispute {
+            client: 1,
+            referenced_transaction_id: 2,
+        });
+
+        payment_engine.add_dispute_action(DisputeAction::Chargeback {
+            client: 1,
+            referenced_transaction_id: 2,
+        });
+
+        assert_eq!(
+            payment_engine.get_client_state(1).unwrap().held(),
+            Decimal::ZERO
+        );
+        assert_eq!(
+            payment_engine.get_client_state(1).unwrap().available(),
+            dec!(1.0)
+        );
+        assert_eq!(payment_engine.get_client_state(1).unwrap().locked(), true);
     }
 }

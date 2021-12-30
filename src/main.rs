@@ -74,7 +74,7 @@ fn process<R: std::io::Read, W: std::io::Write>(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let iter = reader.deserialize();
 
-    let mut payment_engine = PaymentEngine::new();
+    let mut payment_engine = PaymentEngine::default();
 
     for r in iter {
         // Due to internally tagged enums not being supported (https://github.com/BurntSushi/rust-csv/issues/211),
@@ -168,6 +168,25 @@ deposit, 1, 1, 1.0"#[..],
                 &br#"type,client,tx,amount
 deposit,1,1,1.0"#[..],
             );
+
+        let mut output: Vec<u8> = vec![];
+        let writer = csv::Writer::from_writer(&mut output);
+
+        process(reader, writer).unwrap();
+
+        dbg!(std::str::from_utf8(&output[..]).unwrap());
+
+        assert_eq!(
+            output,
+            b"client,available,held,total,locked\n1,1.0,0,1.0,false\n"
+        )
+    }
+    #[test]
+    fn single_row_no_header_and_no_leading_spaces() {
+        let reader = csv::ReaderBuilder::new()
+            .has_headers(false)
+            .trim(csv::Trim::All)
+            .from_reader(&br#"deposit,1,1,1.0"#[..]);
 
         let mut output: Vec<u8> = vec![];
         let writer = csv::Writer::from_writer(&mut output);
