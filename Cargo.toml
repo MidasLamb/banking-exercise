@@ -14,3 +14,7 @@ name = "banking-cli"
 [dependencies]
 csv = "1.1.6"
 serde = { version = "1", features = ["derive"] }
+rust_decimal = { version = "1.19.0", features = ["serde-str"] }
+
+[dev-dependencies]
+rust_decimal_macros = "1.19"
